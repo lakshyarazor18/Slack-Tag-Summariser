@@ -11,7 +11,6 @@ import (
 	"github.com/slack-go/slack"
 )
 
-// dummy commit to trigger CI
 type UniqueMention struct {
 	Timestamp string
 	ChannelId string
