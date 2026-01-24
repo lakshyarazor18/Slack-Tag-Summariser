@@ -5,7 +5,7 @@
 # Each line is a file pattern followed by one or more owners.
 # Order is important. The last matching pattern has the most precedence.
 
-*    @lakshyarazor18
+*    @lakshyarazor18 @pm855razor
 
 # path specific owners:
 # /spec/ @someone @someoneelse
