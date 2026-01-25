@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/slack-go/slack"
+	"google.golang.org/genai"
 )
 
 type UniqueMention struct {
@@ -32,6 +36,24 @@ type ConversationResponseEntry struct {
 	MentionChannelId string
 	MentionTimestamp string
 	Messages         []ThreadMessage
+}
+
+type GenAiResponse struct {
+	Summary        []string
+	Actionable     string
+	ActionRequired []string
+	Priority       string
+}
+
+func cleanJSON(input string) string {
+	input = strings.TrimSpace(input)
+
+	// Remove ```json and ``` if present
+	input = strings.TrimPrefix(input, "```json")
+	input = strings.TrimPrefix(input, "```")
+	input = strings.TrimSuffix(input, "```")
+
+	return strings.TrimSpace(input)
 }
 
 func filterMentions(allMentions *slack.SearchMessages, userId string) ([]slack.SearchMessage, error) {
@@ -202,16 +224,80 @@ func getConversation(SlackClient *slack.Client, filteredMentions []slack.SearchM
 	return conversationsResponse, nil
 }
 
+func buildGenAiPrompt(conversationContext ConversationResponseEntry) string {
+	prompt := fmt.Sprintf("Mention:\n{\n\tText: \"%s\",\n\tTimestamp: \"%s\"\n},\nThreadMessages: [\n",
+		conversationContext.MentionText, conversationContext.MentionTimestamp)
+
+	for i, msg := range conversationContext.Messages {
+		prompt += fmt.Sprintf("\t{\n\t\tText: \"%s\",\n\t\tTimestamp: \"%s\"\n\t}", msg.Text, msg.Timestamp)
+		if i < len(conversationContext.Messages)-1 {
+			prompt += ",\n"
+		} else {
+			prompt += "\n"
+		}
+	}
+	prompt += "]\n"
+
+	promptContext, promptReadError := os.ReadFile("prompt.txt")
+
+	if promptReadError != nil {
+		return promptReadError.Error()
+	}
+
+	prompt += string(promptContext)
+	return prompt
+}
+
+func getGenAiSummary(conversationContext ConversationResponseEntry, genAiClient *genai.Client, ctx context.Context) (*genai.GenerateContentResponse, error) {
+	/*
+		prompt structure:
+		{
+			Mention:{
+				Text: "....",
+				Timestamp: "...."
+			},
+			ThreadMessages: [
+				{
+					Text: "....",
+					Timestamp: "...."
+				},
+				{
+					Text: "....",
+					Timestamp: "...."
+				},
+			]
+		}
+	*/
+
+	// prepare the message
+	genAiPrompt := buildGenAiPrompt(conversationContext)
+
+	genAiGenerateContentResult, genAiGenerateContentError := genAiClient.Models.GenerateContent(
+		ctx,
+		"gemini-3-flash-preview",
+		genai.Text(genAiPrompt),
+		nil,
+	)
+	if genAiGenerateContentError != nil {
+		return nil, genAiGenerateContentError
+	}
+
+	return genAiGenerateContentResult, nil
+}
+
 func main() {
 	// load the environment variables
-	err := godotenv.Load()
-	if err != nil {
+	envFileLoadingError := godotenv.Load()
+	if envFileLoadingError != nil {
 		log.Fatal("Error loading .env file")
 	}
 
 	slackUserToken := os.Getenv("SLACK_USER_TOKEN")
 	slackApi := slack.New(slackUserToken)
 
+	geminiApiKey := os.Getenv("GEMINI_API_KEY")
+
+	// GET mentions for the user in the last day
 	userId := "U040A3Y6W5Q"
 	mentions, getMentionsError := getMentions(slackApi, userId)
 
@@ -226,22 +312,50 @@ func main() {
 		log.Fatal(getConversationsError)
 	}
 
-	for _, conversationContext := range conversationsResponse.ConversationContext {
-		fmt.Println(conversationContext.MentionText)
-		fmt.Println(conversationContext.MentionTimestamp)
-		fmt.Println(conversationContext.MentionChannelId)
-		fmt.Println(conversationContext.MentionPermalink)
+	// Gemini setup
+	ctx := context.Background()
+	genAiClient, genAiError := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  geminiApiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 
-		for _, msg := range conversationContext.Messages {
-			fmt.Println("-----------------------------------------------------")
-			fmt.Println("Timestamp:", msg.Timestamp, ", Message text:", msg.Text)
-			fmt.Println("-----------------------------------------------------")
-		}
-
-		break
+	if genAiError != nil {
+		log.Fatal(genAiError)
 	}
 
-	// provide that conversation to the LLM to get a summary
+	// Query the LLM with the entire context
+	for mentionIndex, conversationContext := range conversationsResponse.ConversationContext {
+
+		geminiSummary, getGeminiSummaryError := getGenAiSummary(conversationContext, genAiClient, ctx)
+
+		if getGeminiSummaryError != nil {
+			log.Fatal(getGeminiSummaryError)
+		}
+
+		if len(geminiSummary.Candidates) > 0 {
+			for _, part := range geminiSummary.Candidates[0].Content.Parts {
+
+				cleanedJson := cleanJSON(part.Text)
+
+				var s GenAiResponse
+				jsonUnmarshallError := json.Unmarshal([]byte(cleanedJson), &s)
+
+				if jsonUnmarshallError != nil {
+					log.Fatal(jsonUnmarshallError)
+				}
+
+				// Now you can access fields:
+				fmt.Println("-----------------------Index:", mentionIndex+1, "Start-----------------------")
+				fmt.Println(s.Summary)
+				fmt.Println(s.Actionable)
+				fmt.Println(s.ActionRequired)
+				fmt.Println(s.Priority)
+				fmt.Println("-----------------------Index:", mentionIndex+1, "End-----------------------")
+			}
+		} else {
+			fmt.Println("No candidates in response")
+		}
+	}
 
 	// Now once the summary is ready, with other field
 	// make a array output in the console
