@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -284,27 +285,14 @@ func getGenAiSummary(conversationContext ConversationResponseEntry, genAiClient 
 	return genAiGenerateContentResult, nil
 }
 
-func main() {
-
-	// Load env only for local development
-	//envFileLoadingError := godotenv.Load()
-	//if envFileLoadingError != nil {
-	//	log.Fatal("Error loading .env file")
-	//}
-
-	// load the environment variables
-
-	slackUserToken := os.Getenv("SLACK_USER_TOKEN")
-	slackApi := slack.New(slackUserToken)
-
-	geminiApiKey := os.Getenv("GEMINI_API_KEY")
+func processMentions(slackApi *slack.Client, geminiApiKey string) error {
 
 	// GET mentions for the user in the last day
 	userId := "U040A3Y6W5Q"
 	mentions, getMentionsError := getMentions(slackApi, userId)
 
 	if getMentionsError != nil {
-		log.Fatal(getMentionsError)
+		return getMentionsError
 	}
 
 	// GET the entire conversation for each thread
@@ -322,7 +310,7 @@ func main() {
 	})
 
 	if genAiError != nil {
-		log.Fatal(genAiError)
+		return genAiError
 	}
 
 	// Query the LLM with the entire context
@@ -359,9 +347,36 @@ func main() {
 		}
 	}
 
-	// Now once the summary is ready, with other field
-	// make a array output in the console
+	return nil
+}
 
-	// connect to google sheets file
-	// create a new sheet with today's date and dump the data
+func main() {
+
+	// Load env only for local development
+	//envFileLoadingError := godotenv.Load()
+	//if envFileLoadingError != nil {
+	//	log.Fatal("Error loading .env file")
+	//}
+
+	// load the environment variables
+
+	slackUserToken := os.Getenv("SLACK_USER_TOKEN")
+	_ = slack.New(slackUserToken)
+
+	_ = os.Getenv("GEMINI_API_KEY")
+
+	//processMentionError := processMentions(slackApi, geminiApiKey)
+	//
+	//if processMentionError != nil {
+	//	log.Fatal(processMentionError)
+	//}
+
+	// Health endpoint
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Service running"))
+	})
+
+	port := "8080"
+	log.Println("Listening on port", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
