@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/slack-go/slack"
 	"google.golang.org/genai"
 )
@@ -286,11 +285,14 @@ func getGenAiSummary(conversationContext ConversationResponseEntry, genAiClient 
 }
 
 func main() {
+
+	// Load env only for local development
+	//envFileLoadingError := godotenv.Load()
+	//if envFileLoadingError != nil {
+	//	log.Fatal("Error loading .env file")
+	//}
+
 	// load the environment variables
-	envFileLoadingError := godotenv.Load()
-	if envFileLoadingError != nil {
-		log.Fatal("Error loading .env file")
-	}
 
 	slackUserToken := os.Getenv("SLACK_USER_TOKEN")
 	slackApi := slack.New(slackUserToken)
