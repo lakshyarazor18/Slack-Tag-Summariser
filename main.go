@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/slack-go/slack"
 	"google.golang.org/genai"
 )
+
+var dbPool *pgxpool.Pool
 
 type UniqueMention struct {
 	Timestamp string
@@ -285,10 +288,9 @@ func getGenAiSummary(conversationContext ConversationResponseEntry, genAiClient 
 	return genAiGenerateContentResult, nil
 }
 
-func processMentions(slackApi *slack.Client, geminiApiKey string) error {
+func processMention(slackApi *slack.Client, geminiApiKey string, userId string) error {
 
 	// GET mentions for the user in the last day
-	userId := "U040A3Y6W5Q"
 	mentions, getMentionsError := getMentions(slackApi, userId)
 
 	if getMentionsError != nil {
@@ -299,10 +301,11 @@ func processMentions(slackApi *slack.Client, geminiApiKey string) error {
 	conversationsResponse, getConversationsError := getConversation(slackApi, mentions)
 
 	if getConversationsError != nil {
-		log.Fatal(getConversationsError)
+		return getConversationsError
 	}
 
 	// Gemini setup
+	geminiApiKey = os.Getenv("GEMINI_API_KEY")
 	ctx := context.Background()
 	genAiClient, genAiError := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  geminiApiKey,
@@ -314,12 +317,12 @@ func processMentions(slackApi *slack.Client, geminiApiKey string) error {
 	}
 
 	// Query the LLM with the entire context
-	for mentionIndex, conversationContext := range conversationsResponse.ConversationContext {
+	for _, conversationContext := range conversationsResponse.ConversationContext {
 
 		geminiSummary, getGeminiSummaryError := getGenAiSummary(conversationContext, genAiClient, ctx)
 
 		if getGeminiSummaryError != nil {
-			log.Fatal(getGeminiSummaryError)
+			return getGeminiSummaryError
 		}
 
 		if len(geminiSummary.Candidates) > 0 {
@@ -333,14 +336,6 @@ func processMentions(slackApi *slack.Client, geminiApiKey string) error {
 				if jsonUnmarshallError != nil {
 					log.Fatal(jsonUnmarshallError)
 				}
-
-				// Now you can access fields:
-				fmt.Println("-----------------------Index:", mentionIndex+1, "Start-----------------------")
-				fmt.Println(s.Summary)
-				fmt.Println(s.Actionable)
-				fmt.Println(s.ActionRequired)
-				fmt.Println(s.Priority)
-				fmt.Println("-----------------------Index:", mentionIndex+1, "End-----------------------")
 			}
 		} else {
 			fmt.Println("No candidates in response")
@@ -350,26 +345,81 @@ func processMentions(slackApi *slack.Client, geminiApiKey string) error {
 	return nil
 }
 
+func initDbPool() error {
+	databaseUrl := os.Getenv("DATABASE_URL")
+	var dbConnectionError error
+	dbPool, dbConnectionError = pgxpool.New(context.Background(), databaseUrl)
+	if dbConnectionError != nil {
+		return dbConnectionError
+	}
+	return nil
+}
+
+func saveUserToDb(userId string, accessToken string) error {
+	query := `
+		INSERT INTO users (user_id, access_token)
+		VALUES ($1, $2)`
+
+	// Execute using the shared pool
+	_, saveUserToDbError := dbPool.Exec(context.Background(), query, userId, accessToken)
+	if saveUserToDbError != nil {
+		return saveUserToDbError
+	}
+
+	return nil
+}
+
+func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
+	// Get the temporary code from the URL query
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "Missing code", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange code for a permanent token
+	// Replace these with your actual Client ID and Secret from Slack Dashboard
+	clientID := os.Getenv("SLACK_CLIENT_ID")
+	clientSecret := os.Getenv("SLACK_CLIENT_SECRET")
+
+	// The redirect_uri must match EXACTLY what is in your Slack Dashboard
+	redirectURI := "https://your-domain.com/slack/oauth/callback"
+
+	resp, err := slack.GetOAuthV2Response(http.DefaultClient, clientID, clientSecret, code, redirectURI)
+	if err != nil {
+		log.Printf("OAuth Error: %v", err)
+		http.Error(w, "Failed to authenticate with Slack", http.StatusInternalServerError)
+		return
+	}
+
+	//Extract the data for your Supabase table
+	userID := resp.AuthedUser.ID
+	accessToken := resp.AuthedUser.AccessToken
+
+	log.Println(userID)
+	log.Println(accessToken)
+
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprint(w, "<h1>Success!</h1><p>The summarizer is now active for your account.</p>")
+}
+
+// save it to DB
+// query the DB to get users
+
+// Sending the message to the final user in the chat room
+
 func main() {
-
-	// Load env only for local development
-	//envFileLoadingError := godotenv.Load()
-	//if envFileLoadingError != nil {
-	//	log.Fatal("Error loading .env file")
-	//}
-
-	// load the environment variables
 
 	slackUserToken := os.Getenv("SLACK_USER_TOKEN")
 	_ = slack.New(slackUserToken)
-
-	_ = os.Getenv("GEMINI_API_KEY")
 
 	//processMentionError := processMentions(slackApi, geminiApiKey)
 	//
 	//if processMentionError != nil {
 	//	log.Fatal(processMentionError)
 	//}
+
+	http.HandleFunc("/slack/oauth/callback", HandleSlackRedirect)
 
 	// Health endpoint
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
