@@ -377,13 +377,15 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Println("Received code:", code)
+
 	// Exchange code for a permanent token
 	// Replace these with your actual Client ID and Secret from Slack Dashboard
 	clientID := os.Getenv("SLACK_CLIENT_ID")
 	clientSecret := os.Getenv("SLACK_CLIENT_SECRET")
 
 	// The redirect_uri must match EXACTLY what is in your Slack Dashboard
-	redirectURI := "https://your-domain.com/slack/oauth/callback"
+	redirectURI := "https://slack-tag-summariser.onrender.com/slack/oauth/callback"
 
 	resp, err := slack.GetOAuthV2Response(http.DefaultClient, clientID, clientSecret, code, redirectURI)
 	if err != nil {
@@ -396,8 +398,8 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	userID := resp.AuthedUser.ID
 	accessToken := resp.AuthedUser.AccessToken
 
-	log.Println(userID)
-	log.Println(accessToken)
+	log.Println("Received userID:", userID)
+	log.Println("Received access token:", accessToken)
 
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, "<h1>Success!</h1><p>The summarizer is now active for your account.</p>")
