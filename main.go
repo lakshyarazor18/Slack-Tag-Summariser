@@ -377,8 +377,6 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("Received code:", code)
-
 	// Exchange code for a permanent token
 	// Replace these with your actual Client ID and Secret from Slack Dashboard
 	clientID := os.Getenv("SLACK_CLIENT_ID")
@@ -398,10 +396,6 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	userID := resp.AuthedUser.ID
 	accessToken := resp.AuthedUser.AccessToken
 
-	log.Println("Received userID:", userID)
-	log.Println("Received access token:", accessToken)
-
-	_ = initDbPool()
 	_ = saveUserToDb(userID, accessToken)
 
 	w.Header().Set("Content-Type", "text/html")
@@ -417,6 +411,8 @@ func main() {
 
 	slackUserToken := os.Getenv("SLACK_USER_TOKEN")
 	_ = slack.New(slackUserToken)
+
+	_ = initDbPool()
 
 	//processMentionError := processMentions(slackApi, geminiApiKey)
 	//
