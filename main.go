@@ -418,6 +418,8 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	userID := resp.AuthedUser.ID
 	accessToken := resp.AuthedUser.AccessToken
 
+	fmt.Println("Successfully authenticated with Slack with userId:", userID, "and accessToken:", accessToken)
+
 	// check before save
 	userExists, checkUserError := checkUserInDb(userID)
 
