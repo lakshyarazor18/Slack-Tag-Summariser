@@ -369,6 +369,19 @@ func saveUserToDb(userId string, accessToken string) error {
 	return nil
 }
 
+func checkUserInDb(userId string) (bool, error) {
+	query := `
+		SELECT COUNT(*) FROM users WHERE user_id = $1`
+
+	var count int
+	dbQueryError := dbPool.QueryRow(context.Background(), query, userId).Scan(&count)
+	if dbQueryError != nil {
+		return false, dbQueryError
+	}
+
+	return count > 0, nil
+}
+
 func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	// Get the temporary code from the URL query
 	code := r.URL.Query().Get("code")
@@ -395,7 +408,28 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	userID := resp.AuthedUser.ID
 	accessToken := resp.AuthedUser.AccessToken
 
+	// check before save
+	start := time.Now()
+	userExists, checkUserError := checkUserInDb(userID)
+	elapsed := time.Since(start)
+	log.Printf("checkUserInDb took %s", elapsed)
+
+	if checkUserError != nil {
+		log.Println("User check failed:", checkUserError)
+		http.Error(w, "Failed to check user in database", http.StatusInternalServerError)
+		return
+	}
+
+	if userExists {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<h1>Already Registered!</h1><p>The summarizer is already active for your account.</p>")
+		return
+	}
+
+	start = time.Now()
 	saveUserError := saveUserToDb(userID, accessToken)
+	elapsed = time.Since(start)
+	log.Printf("saveUserToDb took %s", elapsed)
 
 	if saveUserError != nil {
 		log.Println("User save failed:", saveUserError)
