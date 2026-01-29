@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/slack-go/slack"
 	"google.golang.org/genai"
 )
 
-var dbPool *pgx.Conn
+var dbPool *pgxpool.Pool
 
 type UniqueMention struct {
 	Timestamp string
@@ -348,7 +348,7 @@ func processMention(slackApi *slack.Client, geminiApiKey string, userId string) 
 func initDbPool() error {
 	databaseUrl := os.Getenv("DATABASE_URL")
 	var dbConnectionError error
-	dbPool, dbConnectionError = pgx.Connect(context.Background(), databaseUrl)
+	dbPool, dbConnectionError = pgxpool.New(context.Background(), databaseUrl)
 	if dbConnectionError != nil {
 		return dbConnectionError
 	}
