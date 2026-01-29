@@ -385,7 +385,6 @@ func checkUserInDb(userId string) (bool, error) {
 func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	// Get the temporary code from the URL query
 	code := r.URL.Query().Get("code")
-	code = ""
 	if code == "" {
 		http.Error(w, "Missing code", http.StatusBadRequest)
 		return
