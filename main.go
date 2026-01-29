@@ -356,6 +356,11 @@ func initDbPool() error {
 }
 
 func saveUserToDb(userId string, accessToken string) error {
+
+	if dbPool == nil {
+		return fmt.Errorf("database pool is not initialized")
+	}
+
 	query := `
 		INSERT INTO users (user_id, access_token)
 		VALUES ($1, $2)`
@@ -370,6 +375,11 @@ func saveUserToDb(userId string, accessToken string) error {
 }
 
 func checkUserInDb(userId string) (bool, error) {
+
+	if dbPool == nil {
+		return false, fmt.Errorf("database pool is not initialized")
+	}
+
 	query := `
 		SELECT COUNT(*) FROM users WHERE user_id = $1`
 
@@ -409,10 +419,7 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	accessToken := resp.AuthedUser.AccessToken
 
 	// check before save
-	start := time.Now()
 	userExists, checkUserError := checkUserInDb(userID)
-	elapsed := time.Since(start)
-	log.Printf("checkUserInDb took %s", elapsed)
 
 	if checkUserError != nil {
 		log.Println("User check failed:", checkUserError)
@@ -426,10 +433,7 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start = time.Now()
 	saveUserError := saveUserToDb(userID, accessToken)
-	elapsed = time.Since(start)
-	log.Printf("saveUserToDb took %s", elapsed)
 
 	if saveUserError != nil {
 		log.Println("User save failed:", saveUserError)
@@ -448,10 +452,14 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 
-	slackUserToken := os.Getenv("SLACK_USER_TOKEN")
-	_ = slack.New(slackUserToken)
+	//slackUserToken := os.Getenv("SLACK_USER_TOKEN")
+	//_ = slack.New(slackUserToken)
 
-	_ = initDbPool()
+	dbInitialisationError := initDbPool()
+
+	if dbInitialisationError != nil {
+		log.Fatal("Failed to initialise DB:", dbInitialisationError)
+	}
 
 	//processMentionError := processMentions(slackApi, geminiApiKey)
 	//
@@ -467,6 +475,5 @@ func main() {
 	})
 
 	port := "8080"
-	log.Println("Listening on port", port)
-	_ = http.ListenAndServe(":"+port, nil)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
