@@ -387,7 +387,6 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := slack.GetOAuthV2Response(http.DefaultClient, clientID, clientSecret, code, redirectURI)
 	if err != nil {
-		log.Printf("OAuth Error: %v", err)
 		http.Error(w, "Failed to authenticate with Slack", http.StatusInternalServerError)
 		return
 	}
@@ -396,7 +395,13 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	userID := resp.AuthedUser.ID
 	accessToken := resp.AuthedUser.AccessToken
 
-	_ = saveUserToDb(userID, accessToken)
+	saveUserError := saveUserToDb(userID, accessToken)
+
+	if saveUserError != nil {
+		log.Println("User save failed:", saveUserError)
+		http.Error(w, "Failed to save user to database", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, "<h1>Success!</h1><p>The summarizer is now active for your account.</p>")
@@ -429,5 +434,5 @@ func main() {
 
 	port := "8080"
 	log.Println("Listening on port", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	_ = http.ListenAndServe(":"+port, nil)
 }
