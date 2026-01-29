@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -57,6 +62,54 @@ func cleanJSON(input string) string {
 	input = strings.TrimSuffix(input, "```")
 
 	return strings.TrimSpace(input)
+}
+
+func encrypt(text string) (string, error) {
+	key := []byte(os.Getenv("TOKEN_ENCRYPTION_KEY"))[:32]
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := gcm.Seal(nonce, nonce, []byte(text), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func decrypt(enc string) (string, error) {
+	key := []byte(os.Getenv("TOKEN_ENCRYPTION_KEY"))[:32]
+
+	data, _ := base64.StdEncoding.DecodeString(enc)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonceSize := gcm.NonceSize()
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plaintext), nil
 }
 
 func filterMentions(allMentions *slack.SearchMessages, userId string) ([]slack.SearchMessage, error) {
@@ -418,8 +471,6 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	userID := resp.AuthedUser.ID
 	accessToken := resp.AuthedUser.AccessToken
 
-	fmt.Println("Successfully authenticated with Slack with userId:", userID, "and accessToken:", accessToken)
-
 	// check before save
 	userExists, checkUserError := checkUserInDb(userID)
 
@@ -435,7 +486,13 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	saveUserError := saveUserToDb(userID, accessToken)
+	encryptedAccessToken, encryptError := encrypt(accessToken)
+	if encryptError != nil {
+		log.Println("Token encryption failed:", encryptError)
+		http.Error(w, "Failed to encrypt access token", http.StatusInternalServerError)
+		return
+	}
+	saveUserError := saveUserToDb(userID, encryptedAccessToken)
 
 	if saveUserError != nil {
 		log.Println("User save failed:", saveUserError)
