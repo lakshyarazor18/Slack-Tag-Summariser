@@ -401,6 +401,8 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	log.Println("Received userID:", userID)
 	log.Println("Received access token:", accessToken)
 
+	_ = saveUserToDb(userID, accessToken)
+
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, "<h1>Success!</h1><p>The summarizer is now active for your account.</p>")
 }
