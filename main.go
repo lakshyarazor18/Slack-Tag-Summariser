@@ -401,6 +401,7 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	log.Println("Received userID:", userID)
 	log.Println("Received access token:", accessToken)
 
+	_ = initDbPool()
 	_ = saveUserToDb(userID, accessToken)
 
 	w.Header().Set("Content-Type", "text/html")
