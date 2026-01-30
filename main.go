@@ -53,6 +53,11 @@ type GenAiResponse struct {
 	Priority       string
 }
 
+type User struct {
+	UserID      string
+	AccessToken string
+}
+
 func cleanJSON(input string) string {
 	input = strings.TrimSpace(input)
 
@@ -504,8 +509,35 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "<h1>Success!</h1><p>The summarizer is now active for your account.</p>")
 }
 
-// save it to DB
-// query the DB to get users
+func getInstalledUsers() ([]User, error) {
+	if dbPool == nil {
+		return nil, fmt.Errorf("database pool is not initialized")
+	}
+
+	query := `SELECT user_id, access_token FROM users`
+
+	rows, dbQueryError := dbPool.Query(context.Background(), query)
+	if dbQueryError != nil {
+		return nil, dbQueryError
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.UserID, &user.AccessToken); err != nil {
+			return nil, err
+		}
+		decryptedAccessToken, decryptError := decrypt(user.AccessToken)
+		if decryptError != nil {
+			return nil, decryptError
+		}
+		user.AccessToken = decryptedAccessToken
+		users = append(users, user)
+	}
+
+	return users, nil
+}
 
 // Sending the message to the final user in the chat room
 
@@ -532,6 +564,21 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Service running"))
 	})
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			resp, err := http.Get("https://slack-tag-summariser.onrender.com/")
+			if err != nil {
+				log.Println("Health check failed:", err)
+			} else {
+				resp.Body.Close()
+				log.Println("Health check successful")
+			}
+			<-ticker.C
+		}
+	}()
 
 	port := "8080"
 	log.Fatal(http.ListenAndServe(":"+port, nil))
