@@ -2,17 +2,13 @@ package main
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +18,7 @@ import (
 )
 
 var dbPool *pgxpool.Pool
+var maxMentions = 30
 
 type UniqueMention struct {
 	Timestamp string
@@ -31,6 +28,7 @@ type UniqueMention struct {
 type ConversationsResponse struct {
 	// I want immutability
 	// The struct is not big enough to make a pointer
+	// hence using the slice directly for ConversationResponseEntry
 	ConversationContext []ConversationResponseEntry
 }
 
@@ -47,15 +45,15 @@ type ConversationResponseEntry struct {
 }
 
 type GenAiResponse struct {
-	Summary        []string
-	Actionable     string
-	ActionRequired []string
-	Priority       string
+	MentionPermalink string
+	Summary          []string `json:"summary"`
+	Actionable       string   `json:"actionable"`
+	ActionRequired   []string `json:"action_required"`
+	Priority         string   `json:"priority"`
 }
 
 type User struct {
-	UserID      string
-	AccessToken string
+	UserID string
 }
 
 func cleanJSON(input string) string {
@@ -67,54 +65,6 @@ func cleanJSON(input string) string {
 	input = strings.TrimSuffix(input, "```")
 
 	return strings.TrimSpace(input)
-}
-
-func encrypt(text string) (string, error) {
-	key := []byte(os.Getenv("TOKEN_ENCRYPTION_KEY"))[:32]
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-
-	ciphertext := gcm.Seal(nonce, nonce, []byte(text), nil)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-func decrypt(enc string) (string, error) {
-	key := []byte(os.Getenv("TOKEN_ENCRYPTION_KEY"))[:32]
-
-	data, _ := base64.StdEncoding.DecodeString(enc)
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	nonceSize := gcm.NonceSize()
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return "", err
-	}
-
-	return string(plaintext), nil
 }
 
 func filterMentions(allMentions *slack.SearchMessages, userId string) ([]slack.SearchMessage, error) {
@@ -192,14 +142,14 @@ func filterMentions(allMentions *slack.SearchMessages, userId string) ([]slack.S
 
 func getMentions(slackClient *slack.Client, userId string) ([]slack.SearchMessage, error) {
 	// prepare the query to search for messages mentioning the user in the last day
-	yesterday := time.Now().AddDate(0, 0, -4).Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -2).Format("2006-01-02")
 	today := time.Now().Format("2006-01-02")
 	query := fmt.Sprintf("<@%s> after:%s before:%s", userId, yesterday, today)
 
 	params := slack.SearchParameters{
 		Sort:          "timestamp",
 		SortDirection: "desc",
-		Count:         40, // taking at max 40 mentions in a day
+		Count:         maxMentions, // taking at max 30 mentions in a day
 	}
 	// do the search api call
 	res, err := slackClient.SearchMessages(query, params)
@@ -335,7 +285,7 @@ func getGenAiSummary(conversationContext ConversationResponseEntry, genAiClient 
 
 	genAiGenerateContentResult, genAiGenerateContentError := genAiClient.Models.GenerateContent(
 		ctx,
-		"gemini-3-flash-preview",
+		"gemini-3-pro-preview",
 		genai.Text(genAiPrompt),
 		nil,
 	)
@@ -346,41 +296,43 @@ func getGenAiSummary(conversationContext ConversationResponseEntry, genAiClient 
 	return genAiGenerateContentResult, nil
 }
 
-func processMention(slackApi *slack.Client, geminiApiKey string, userId string) error {
+func sortGenAiResponsesByPriority(responses []GenAiResponse) {
+	priorityOrder := map[string]int{
+		"P0": 0,
+		"P1": 1,
+		"P2": 2,
+	}
+	sort.Slice(responses, func(i, j int) bool {
+		pi := priorityOrder[strings.ToUpper(responses[i].Priority)]
+		pj := priorityOrder[strings.ToUpper(responses[j].Priority)]
+		return pi < pj
+	})
+}
+
+func processUser(slackApi *slack.Client, genAiClient *genai.Client, ctx context.Context, userId string) ([]GenAiResponse, error) {
 
 	// GET mentions for the user in the last day
 	mentions, getMentionsError := getMentions(slackApi, userId)
 
 	if getMentionsError != nil {
-		return getMentionsError
+		return nil, getMentionsError
 	}
-
 	// GET the entire conversation for each thread
 	conversationsResponse, getConversationsError := getConversation(slackApi, mentions)
 
 	if getConversationsError != nil {
-		return getConversationsError
+		return nil, getConversationsError
 	}
 
-	// Gemini setup
-	geminiApiKey = os.Getenv("GEMINI_API_KEY")
-	ctx := context.Background()
-	genAiClient, genAiError := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  geminiApiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-
-	if genAiError != nil {
-		return genAiError
-	}
-
+	// save the response from gemini in a slice of GenAiResponse
+	var genAiResponses []GenAiResponse
 	// Query the LLM with the entire context
 	for _, conversationContext := range conversationsResponse.ConversationContext {
 
 		geminiSummary, getGeminiSummaryError := getGenAiSummary(conversationContext, genAiClient, ctx)
 
 		if getGeminiSummaryError != nil {
-			return getGeminiSummaryError
+			return nil, getGeminiSummaryError
 		}
 
 		if len(geminiSummary.Candidates) > 0 {
@@ -389,18 +341,37 @@ func processMention(slackApi *slack.Client, geminiApiKey string, userId string) 
 				cleanedJson := cleanJSON(part.Text)
 
 				var s GenAiResponse
-				jsonUnmarshallError := json.Unmarshal([]byte(cleanedJson), &s)
+				var data map[string]interface{}
+				jsonUnmarshallError := json.Unmarshal([]byte(cleanedJson), &data)
 
 				if jsonUnmarshallError != nil {
-					log.Fatal(jsonUnmarshallError)
+					return nil, jsonUnmarshallError
 				}
+
+				// prepare the GenAiResponse struct
+				s.Actionable = data["actionable"].(string)
+				s.Priority = data["priority"].(string)
+				s.MentionPermalink = conversationContext.MentionPermalink
+
+				if summary, ok := data["summary"].([]interface{}); ok {
+					for _, item := range summary {
+						s.Summary = append(s.Summary, item.(string))
+					}
+				}
+
+				if actionRequired, ok := data["action_required"].([]interface{}); ok {
+					for _, item := range actionRequired {
+						s.ActionRequired = append(s.ActionRequired, item.(string))
+					}
+				}
+
+				genAiResponses = append(genAiResponses, s)
 			}
-		} else {
-			fmt.Println("No candidates in response")
 		}
 	}
 
-	return nil
+	sortGenAiResponsesByPriority(genAiResponses)
+	return genAiResponses, nil
 }
 
 func initDbPool() error {
@@ -413,18 +384,18 @@ func initDbPool() error {
 	return nil
 }
 
-func saveUserToDb(userId string, accessToken string) error {
+func saveUserToDb(userId string) error {
 
 	if dbPool == nil {
 		return fmt.Errorf("database pool is not initialized")
 	}
 
 	query := `
-		INSERT INTO users (user_id, access_token)
-		VALUES ($1, $2)`
+		INSERT INTO users (user_id)
+		VALUES ($1)`
 
 	// Execute using the shared pool
-	_, saveUserToDbError := dbPool.Exec(context.Background(), query, userId, accessToken)
+	_, saveUserToDbError := dbPool.Exec(context.Background(), query, userId)
 	if saveUserToDbError != nil {
 		return saveUserToDbError
 	}
@@ -474,7 +445,6 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 
 	//Extract the data for your Supabase table
 	userID := resp.AuthedUser.ID
-	accessToken := resp.AuthedUser.AccessToken
 
 	// check before save
 	userExists, checkUserError := checkUserInDb(userID)
@@ -491,13 +461,7 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encryptedAccessToken, encryptError := encrypt(accessToken)
-	if encryptError != nil {
-		log.Println("Token encryption failed:", encryptError)
-		http.Error(w, "Failed to encrypt access token", http.StatusInternalServerError)
-		return
-	}
-	saveUserError := saveUserToDb(userID, encryptedAccessToken)
+	saveUserError := saveUserToDb(userID)
 
 	if saveUserError != nil {
 		log.Println("User save failed:", saveUserError)
@@ -514,49 +478,121 @@ func getInstalledUsers() ([]User, error) {
 		return nil, fmt.Errorf("database pool is not initialized")
 	}
 
-	query := `SELECT user_id, access_token FROM users`
+	query := `SELECT user_id FROM users`
 
 	rows, dbQueryError := dbPool.Query(context.Background(), query)
 	if dbQueryError != nil {
 		return nil, dbQueryError
 	}
 	defer rows.Close()
-
 	var users []User
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.UserID, &user.AccessToken); err != nil {
+		if err := rows.Scan(&user.UserID); err != nil {
 			return nil, err
 		}
-		decryptedAccessToken, decryptError := decrypt(user.AccessToken)
-		if decryptError != nil {
-			return nil, decryptError
-		}
-		user.AccessToken = decryptedAccessToken
 		users = append(users, user)
 	}
 
 	return users, nil
 }
 
-// Sending the message to the final user in the chat room
+func formatGenAiResponsesVertical(responses []GenAiResponse) string {
+	var b strings.Builder
+
+	for i, r := range responses {
+		// 1. Header with Emoji & Link
+		b.WriteString(fmt.Sprintf("🔗 *Mention Link:* <%s|Click Here> |\n", r.MentionPermalink))
+
+		// 2. Priority-based Emoji logic
+		priorityEmoji := "⚪" // Default
+		switch strings.ToUpper(r.Priority) {
+		case "P0", "P1":
+			priorityEmoji = "🚨"
+		case "P2":
+			priorityEmoji = "⚠️"
+		case "P3":
+			priorityEmoji = "🔵"
+		}
+
+		// Actionable Emoji
+		actionEmoji := "✅"
+		if strings.ToLower(r.Actionable) == "no" {
+			actionEmoji = "➖"
+		}
+
+		// 3. Status Row
+		b.WriteString(fmt.Sprintf("%s *Actionable:* %s.     %s *Priority:* `%s`\n", actionEmoji, r.Actionable, priorityEmoji, r.Priority))
+
+		// 4. Summary Section (with a nice header emoji)
+		b.WriteString("\n📝 *Summary*\n")
+		for j, s := range r.Summary {
+			b.WriteString(fmt.Sprintf("  %d. %s\n", j+1, s))
+		}
+
+		// 5. Action Required Section
+		if len(r.ActionRequired) > 0 {
+			b.WriteString("\n🛠️ *Action Required*\n")
+			for _, a := range r.ActionRequired {
+				b.WriteString(fmt.Sprintf("  • %s\n", a)) // Using bullets for actions for variety
+			}
+		}
+
+		// 6. Styled Divider
+		if i < len(responses)-1 {
+			b.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+		}
+	}
+
+	return b.String()
+}
+
+func sendSlackDm(slackClient *slack.Client, userId string, processUserResult []GenAiResponse) (bool, error) {
+	msg := formatGenAiResponsesVertical(processUserResult)
+
+	fmt.Println(msg)
+
+	_, _, sendSlackDmError := slackClient.PostMessage(
+		userId,
+		slack.MsgOptionText(msg, false),
+	)
+
+	if sendSlackDmError != nil {
+		return false, sendSlackDmError
+	}
+
+	return true, nil
+}
 
 func main() {
 
+	//err := godotenv.Load()
+	//if err != nil {
+	//	log.Fatal("Error loading .env file")
+	//}
+
 	//slackUserToken := os.Getenv("SLACK_USER_TOKEN")
-	//_ = slack.New(slackUserToken)
+	//slackApi := slack.New(slackUserToken)
+	//geminiApiKey := os.Getenv("GEMINI_API_KEY")
+
+	// Gemini setup
+	//geminiApiKey = os.Getenv("GEMINI_API_KEY")
+	//ctx := context.Background()
+	//
+	//genAiClient, genAiError := genai.NewClient(ctx, &genai.ClientConfig{
+	//	APIKey:  geminiApiKey,
+	//	Backend: genai.BackendGeminiAPI,
+	//})
+	//
+	//if genAiError != nil {
+	//	log.Fatal(genAiError)
+	//}
 
 	dbInitialisationError := initDbPool()
 
 	if dbInitialisationError != nil {
 		log.Fatal("Failed to initialise DB:", dbInitialisationError)
 	}
-
-	//processMentionError := processMentions(slackApi, geminiApiKey)
-	//
-	//if processMentionError != nil {
-	//	log.Fatal(processMentionError)
-	//}
 
 	http.HandleFunc("/slack/oauth/callback", HandleSlackRedirect)
 
