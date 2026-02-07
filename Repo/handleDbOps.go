@@ -12,10 +12,10 @@ import (
 
 type User = Models.User
 
-func InitDbPool(dbPool *pgxpool.Pool) error {
+func InitDbPool(dbPool **pgxpool.Pool) error {
 	databaseUrl := os.Getenv("DATABASE_URL")
 	var dbConnectionError error
-	dbPool, dbConnectionError = pgxpool.New(context.Background(), databaseUrl)
+	*dbPool, dbConnectionError = pgxpool.New(context.Background(), databaseUrl)
 	if dbConnectionError != nil {
 		return dbConnectionError
 	}

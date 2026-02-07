@@ -190,7 +190,7 @@ func main() {
 	//	log.Fatal("Process User Error:", processUserErr)
 	//}
 
-	dbInitialisationError := Repo.InitDbPool(dbPool)
+	dbInitialisationError := Repo.InitDbPool(&dbPool)
 
 	if dbInitialisationError != nil {
 		log.Fatal("Failed to initialise DB:", dbInitialisationError)
