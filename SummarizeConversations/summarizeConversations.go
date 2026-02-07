@@ -114,7 +114,7 @@ func summarizeAllConversationsWithGenAi(
 		genAiRes := SummarizeSingleConversation(conversationContext, genAiClient, ctx)
 		genAiResponses = append(genAiResponses, genAiRes)
 	}
-	sortGenAiResponsesByPriority(genAiResponses)
+	SortGenAiResponsesByPriority(genAiResponses)
 	return nil
 }
 
