@@ -64,8 +64,6 @@ func formatGenAiResponsesVertical(responses []GenAiResponse) string {
 func SendSlackDm(slackClient *slack.Client, userId string, processUserResult []GenAiResponse) (bool, error) {
 	msg := formatGenAiResponsesVertical(processUserResult)
 
-	fmt.Println(msg)
-
 	_, _, sendSlackDmError := slackClient.PostMessage(
 		userId,
 		slack.MsgOptionText(msg, false),
