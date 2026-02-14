@@ -217,7 +217,7 @@ func main() {
 	}
 
 	c := cron.New()
-	_, cronInitialiseErr := c.AddFunc("0 14 * * *", func() {
+	_, cronInitialiseErr := c.AddFunc("0 8 * * *", func() {
 		handleDailyCronTrigger()
 	})
 
