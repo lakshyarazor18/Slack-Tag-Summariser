@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/robfig/cron/v3"
 	"github.com/slack-go/slack"
 	"google.golang.org/genai"
 )
@@ -130,6 +131,7 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 
 	//Extract the data for your DB table
 	userID := resp.AuthedUser.ID
+	userToken := resp.AuthedUser.AccessToken
 
 	// check before save
 	userExists, checkUserError := Repo.CheckUserInDb(userID, dbPool)
@@ -146,7 +148,7 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	saveUserError := Repo.SaveUserToDb(userID, dbPool)
+	saveUserError := Repo.SaveUserToDb(userID, userToken, dbPool)
 
 	if saveUserError != nil {
 		log.Println("User save failed:", saveUserError)
@@ -158,43 +160,65 @@ func HandleSlackRedirect(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "<h1>Success!</h1><p>The summarizer is now active for your account.</p>")
 }
 
+func handleDailyCronTrigger() {
+
+	slackBotToken := os.Getenv("SLACK_BOT_TOKEN")
+	slackBotApi := slack.New(slackBotToken)
+	geminiApiKey := os.Getenv("GEMINI_API_KEY")
+
+	//Gemini setup
+	geminiApiKey = os.Getenv("GEMINI_API_KEY")
+	ctx := context.Background()
+
+	genAiClient, genAiError := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  geminiApiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+
+	if genAiError != nil {
+		log.Fatal(genAiError)
+	}
+
+	installedUsers, getUsersError := Repo.GetInstalledUsers(dbPool)
+
+	if getUsersError != nil {
+		log.Println("Failed to get installed users from database:", getUsersError)
+		return
+	}
+
+	for _, user := range installedUsers {
+
+		accessToken := user.UserToken
+		userId := user.UserID
+		slackApi := slack.New(accessToken)
+
+		go func(userId string, slackApi *slack.Client, slackBotApi *slack.Client, ctx context.Context) {
+			_, processUserErr := processUser(slackApi, slackBotApi, genAiClient, ctx, userId)
+			if processUserErr != nil {
+				log.Println("Scheduled Process User Error:", processUserErr, "for user:", userId)
+			}
+		}(userId, slackApi, slackBotApi, ctx)
+	}
+}
+
 func main() {
 
 	//err := godotenv.Load()
 	//if err != nil {
 	//	log.Fatal("Error loading .env file")
 	//}
+	//
 	deploymentBaseURI := os.Getenv("DEPLOYMENT_BASE_URI")
-	//slackUserToken := os.Getenv("SLACK_USER_TOKEN")
-	//slackBotToken := os.Getenv("SLACK_BOT_TOKEN")
-	//slackApi := slack.New(slackUserToken)
-	//slackBotApi := slack.New(slackBotToken)
-	//geminiApiKey := os.Getenv("GEMINI_API_KEY")
-	//
-	////Gemini setup
-	//geminiApiKey = os.Getenv("GEMINI_API_KEY")
-	//ctx := context.Background()
-	//
-	//genAiClient, genAiError := genai.NewClient(ctx, &genai.ClientConfig{
-	//	APIKey:  geminiApiKey,
-	//	Backend: genai.BackendGeminiAPI,
-	//})
-	//
-	//if genAiError != nil {
-	//	log.Fatal(genAiError)
-	//}
 
-	//_, processUserErr := processUser(slackApi, slackBotApi, genAiClient, ctx, "U08J3EBHG4C")
-	//
-	//if processUserErr != nil {
-	//	log.Fatal("Process User Error:", processUserErr)
-	//}
+	c := cron.New()
+	_, cronInitialiseErr := c.AddFunc("0 14 * * *", func() {
+		handleDailyCronTrigger()
+	})
 
-	dbInitialisationError := Repo.InitDbPool(&dbPool)
-
-	if dbInitialisationError != nil {
-		log.Fatal("Failed to initialise DB:", dbInitialisationError)
+	if cronInitialiseErr != nil {
+		log.Fatal("Failed to schedule cron job:", cronInitialiseErr)
 	}
+	c.Start()
 
 	http.HandleFunc("/slack/oauth/callback", HandleSlackRedirect)
 

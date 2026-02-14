@@ -33,5 +33,6 @@ type GenAiResponse struct {
 }
 
 type User struct {
-	UserID string
+	UserID    string
+	UserToken string
 }
