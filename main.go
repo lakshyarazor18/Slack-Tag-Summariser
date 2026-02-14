@@ -210,6 +210,12 @@ func main() {
 	//
 	deploymentBaseURI := os.Getenv("DEPLOYMENT_BASE_URI")
 
+	dbInitialisationError := Repo.InitDbPool(&dbPool)
+
+	if dbInitialisationError != nil {
+		log.Fatal("Failed to initialise DB:", dbInitialisationError)
+	}
+
 	c := cron.New()
 	_, cronInitialiseErr := c.AddFunc("0 14 * * *", func() {
 		handleDailyCronTrigger()
